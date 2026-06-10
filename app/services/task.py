@@ -13,7 +13,7 @@ from app.services import state as sm
 from app.utils import utils
 
 
-def generate_script(task_id, params):
+def generate_script(task_id, params, user_id="global"):
     logger.info("\n\n## generating video script")
     video_script = params.video_script.strip()
     if not video_script:
@@ -23,6 +23,12 @@ def generate_script(task_id, params):
             paragraph_number=params.paragraph_number,
             video_script_prompt=params.video_script_prompt,
             custom_system_prompt=params.custom_system_prompt,
+            video_duration=getattr(params, "video_duration", 30),
+            user_id=user_id,
+            prompt_mode=getattr(params, "prompt_mode", "viral_shorts"),
+            target_platform=getattr(params, "target_platform", "youtube_shorts"),
+            emotional_tone=getattr(params, "emotional_tone", "inspiring"),
+            trend_context=getattr(params, "trend_context", ""),
         )
     else:
         logger.debug(f"video script: \n{video_script}")
@@ -32,15 +38,34 @@ def generate_script(task_id, params):
         logger.error("failed to generate video script.")
         return None
 
+    if getattr(params, "emoji_subtitles", False) and "Error: " not in video_script:
+        video_script = llm.inject_emojis_into_script(video_script, user_id=user_id)
+        params.video_script = video_script
+
+
+    # Auto-score in the background (non-blocking)
+    import threading
+    def run_autoscore():
+        try:
+            from app.services import db
+            scores = llm.score_script_virality(video_script, user_id=user_id)
+            platform = getattr(params, "target_platform", "youtube_shorts")
+            db.save_viral_score(script=video_script, platform=platform, scores=scores, task_id=task_id)
+            logger.info(f"Auto-scored generated script for task {task_id}")
+        except Exception as score_err:
+            logger.error(f"Failed to auto-score generated script for task {task_id}: {score_err}")
+
+    threading.Thread(target=run_autoscore, daemon=True).start()
+
     return video_script
 
 
-def generate_terms(task_id, params, video_script):
+def generate_terms(task_id, params, video_script, user_id="global"):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
         video_terms = llm.generate_terms(
-            video_subject=params.video_subject, video_script=video_script, amount=5
+            video_subject=params.video_subject, video_script=video_script, amount=5, user_id=user_id
         )
     else:
         if isinstance(video_terms, str):
@@ -60,8 +85,8 @@ def generate_terms(task_id, params, video_script):
     return video_terms
 
 
-def save_script_data(task_id, video_script, video_terms, params):
-    script_file = path.join(utils.task_dir(task_id), "script.json")
+def save_script_data(task_id, video_script, video_terms, params, user_id="global"):
+    script_file = path.join(utils.task_dir(task_id, user_id), "script.json")
     script_data = {
         "script": video_script,
         "search_terms": video_terms,
@@ -72,7 +97,7 @@ def save_script_data(task_id, video_script, video_terms, params):
         f.write(utils.to_json(script_data))
 
 
-def generate_audio(task_id, params, video_script):
+def generate_audio(task_id, params, video_script, user_id="global"):
     '''
     Generate audio for the video script.
     If a custom audio file is provided, it will be used directly.
@@ -94,12 +119,13 @@ def generate_audio(task_id, params, video_script):
             )
         else:
             logger.info("no custom audio file provided, using TTS to generate audio.")
-        audio_file = path.join(utils.task_dir(task_id), "audio.mp3")
+        audio_file = path.join(utils.task_dir(task_id, user_id), "audio.mp3")
         sub_maker = voice.tts(
             text=video_script,
             voice_name=voice.parse_voice_name(params.voice_name),
             voice_rate=params.voice_rate,
             voice_file=audio_file,
+            user_id=user_id,
         )
         if sub_maker is None:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -125,7 +151,7 @@ def generate_audio(task_id, params, video_script):
             return None, None, None
         return custom_audio_file, audio_duration, None
 
-def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
+def generate_subtitle(task_id, params, video_script, sub_maker, audio_file, user_id="global"):
     '''
     Generate subtitle for the video script.
     If subtitle generation is disabled or no subtitle maker is provided, it will return an empty string.
@@ -137,7 +163,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     if not params.subtitle_enabled or sub_maker is None:
         return ""
 
-    subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
+    subtitle_path = path.join(utils.task_dir(task_id, user_id), "subtitle.srt")
     subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
     logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
 
@@ -163,7 +189,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     return subtitle_path
 
 
-def get_video_materials(task_id, params, video_terms, audio_duration):
+def get_video_materials(task_id, params, video_terms, audio_duration, user_id="global"):
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
         materials = video.preprocess_video(
@@ -186,6 +212,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             video_contact_mode=params.video_concat_mode,
             audio_duration=audio_duration * params.video_count,
             max_clip_duration=params.video_clip_duration,
+            user_id=user_id,
         )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -197,7 +224,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
 
 
 def generate_final_videos(
-    task_id, params, downloaded_videos, audio_file, subtitle_path
+    task_id, params, downloaded_videos, audio_file, subtitle_path, user_id="global"
 ):
     final_video_paths = []
     combined_video_paths = []
@@ -210,7 +237,7 @@ def generate_final_videos(
     for i in range(params.video_count):
         index = i + 1
         combined_video_path = path.join(
-            utils.task_dir(task_id), f"combined-{index}.mp4"
+            utils.task_dir(task_id, user_id), f"combined-{index}.mp4"
         )
         logger.info(f"\n\n## combining video: {index} => {combined_video_path}")
         video.combine_videos(
@@ -222,12 +249,14 @@ def generate_final_videos(
             video_transition_mode=video_transition_mode,
             max_clip_duration=params.video_clip_duration,
             threads=params.n_threads,
+            ken_burns=getattr(params, "ken_burns", True),
+            beat_sync=getattr(params, "beat_sync", False),
         )
 
         _progress += 50 / params.video_count / 2
         sm.state.update_task(task_id, progress=_progress)
 
-        final_video_path = path.join(utils.task_dir(task_id), f"final-{index}.mp4")
+        final_video_path = path.join(utils.task_dir(task_id, user_id), f"final-{index}.mp4")
 
         logger.info(f"\n\n## generating video: {index} => {final_video_path}")
         video.generate_video(
@@ -247,144 +276,265 @@ def generate_final_videos(
     return final_video_paths, combined_video_paths
 
 
-def start(task_id, params: VideoParams, stop_at: str = "video"):
-    logger.info(f"start task: {task_id}, stop_at: {stop_at}")
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
+def start(task_id, params: VideoParams, stop_at: str = "video", enable_auto_upload: bool = True, user_id: str = "global"):
+    logger.info(f"start task: {task_id} for user {user_id}, stop_at: {stop_at}")
+    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5, status_message="Initializing video generation pipeline...", user_id=user_id)
 
-    # 1. Generate script
-    video_script = generate_script(task_id, params)
-    if not video_script or "Error: " in video_script:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-        return
+    def check_stop_status():
+        task = sm.state.get_task(task_id)
+        if task and task.get("state") == 3:
+            raise RuntimeError("Task execution paused/stopped by user.")
 
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=10)
+    try:
+        check_stop_status()
+        
+        # 1. Generate script
+        logger.info("Step 1: Generating video script...")
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Generating video script...", user_id=user_id)
+        video_script = generate_script(task_id, params, user_id=user_id)
+        if not video_script or "Error: " in video_script:
+            raise Exception("Failed to generate video script or encountered LLM error.")
+        
+        check_stop_status()
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=15, script=video_script, status_message="Video script generated.", user_id=user_id)
 
-    if stop_at == "script":
-        sm.state.update_task(
-            task_id, state=const.TASK_STATE_COMPLETE, progress=100, script=video_script
-        )
-        return {"script": video_script}
-
-    # 2. Generate terms
-    video_terms = ""
-    if params.video_source != "local":
-        video_terms = generate_terms(task_id, params, video_script)
-        if not video_terms:
-            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-            return
-
-    save_script_data(task_id, video_script, video_terms, params)
-
-    if stop_at == "terms":
-        sm.state.update_task(
-            task_id, state=const.TASK_STATE_COMPLETE, progress=100, terms=video_terms
-        )
-        return {"script": video_script, "terms": video_terms}
-
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=20)
-
-    # 3. Generate audio
-    audio_file, audio_duration, sub_maker = generate_audio(
-        task_id, params, video_script
-    )
-    if not audio_file:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-        return
-
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=30)
-
-    if stop_at == "audio":
-        sm.state.update_task(
-            task_id,
-            state=const.TASK_STATE_COMPLETE,
-            progress=100,
-            audio_file=audio_file,
-        )
-        return {"audio_file": audio_file, "audio_duration": audio_duration}
-
-    # 4. Generate subtitle
-    subtitle_path = generate_subtitle(
-        task_id, params, video_script, sub_maker, audio_file
-    )
-
-    if stop_at == "subtitle":
-        sm.state.update_task(
-            task_id,
-            state=const.TASK_STATE_COMPLETE,
-            progress=100,
-            subtitle_path=subtitle_path,
-        )
-        return {"subtitle_path": subtitle_path}
-
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
-
-    # 5. Get video materials
-    downloaded_videos = get_video_materials(
-        task_id, params, video_terms, audio_duration
-    )
-    if not downloaded_videos:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-        return
-
-    if stop_at == "materials":
-        sm.state.update_task(
-            task_id,
-            state=const.TASK_STATE_COMPLETE,
-            progress=100,
-            materials=downloaded_videos,
-        )
-        return {"materials": downloaded_videos}
-
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=50)
-
-    # 仅完整视频生成流程才需要处理视频拼接模式；
-    # 这样可以避免 /subtitle 和 /audio 这类请求访问不存在的字段。
-    if type(params.video_concat_mode) is str:
-        params.video_concat_mode = VideoConcatMode(params.video_concat_mode)
-
-    # 6. Generate final videos
-    final_video_paths, combined_video_paths = generate_final_videos(
-        task_id, params, downloaded_videos, audio_file, subtitle_path
-    )
-
-    if not final_video_paths:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-        return
-
-    logger.success(
-        f"task {task_id} finished, generated {len(final_video_paths)} videos."
-    )
-
-    # 7. Cross-post to TikTok/Instagram (if enabled)
-    cross_post_results = []
-    if upload_post.upload_post_service.is_configured() and upload_post.upload_post_service.auto_upload:
-        logger.info("\n\n## cross-posting videos to TikTok/Instagram")
-        for video_path in final_video_paths:
-            result = upload_post.cross_post_video(
-                video_path=video_path,
-                title=params.video_subject or "Check out this video! #shorts #viral"
+        if stop_at == "script":
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_COMPLETE, progress=100, script=video_script, user_id=user_id
             )
-            cross_post_results.append(result)
-            if result.get('success'):
-                logger.info(f"✅ Cross-posted: {video_path}")
-            else:
-                logger.warning(f"⚠️ Failed to cross-post: {video_path} - {result.get('error', 'Unknown error')}")
+            return {"script": video_script}
 
-    kwargs = {
-        "videos": final_video_paths,
-        "combined_videos": combined_video_paths,
-        "script": video_script,
-        "terms": video_terms,
-        "audio_file": audio_file,
-        "audio_duration": audio_duration,
-        "subtitle_path": subtitle_path,
-        "materials": downloaded_videos,
-        "cross_post_results": cross_post_results if cross_post_results else None,
-    }
-    sm.state.update_task(
-        task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs
-    )
-    return kwargs
+        check_stop_status()
+        
+        # 2. Generate terms
+        logger.info("Step 2: Generating search terms...")
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Generating visual materials search terms...", user_id=user_id)
+        video_terms = ""
+        if params.video_source != "local":
+            video_terms = generate_terms(task_id, params, video_script, user_id=user_id)
+            if not video_terms:
+                raise Exception("Failed to generate search terms from script.")
+        
+        check_stop_status()
+        save_script_data(task_id, video_script, video_terms, params, user_id=user_id)
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=30, terms=video_terms, status_message="Search terms generated.", user_id=user_id)
+
+        if stop_at == "terms":
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_COMPLETE, progress=100, script=video_script, terms=video_terms, user_id=user_id
+            )
+            return {"script": video_script, "terms": video_terms}
+
+        check_stop_status()
+        
+        # 3. Generate audio
+        logger.info("Step 3: Generating voiceover audio...")
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Synthesizing voiceover audio...", user_id=user_id)
+        audio_file, audio_duration, sub_maker = generate_audio(
+            task_id, params, video_script, user_id=user_id
+        )
+        if not audio_file:
+            raise Exception("Failed to generate TTS audio narration.")
+
+        check_stop_status()
+        sm.state.update_task(
+            task_id, 
+            state=const.TASK_STATE_PROCESSING, 
+            progress=45, 
+            audio_file=audio_file, 
+            audio_duration=audio_duration,
+            status_message="Voiceover audio generated.",
+            user_id=user_id
+        )
+
+        if stop_at == "audio":
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_COMPLETE,
+                progress=100,
+                audio_file=audio_file,
+                audio_duration=audio_duration,
+                user_id=user_id
+            )
+            return {"audio_file": audio_file, "audio_duration": audio_duration}
+
+        check_stop_status()
+        
+        # 4. Generate subtitle
+        logger.info("Step 4: Creating subtitles...")
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Generating subtitles alignment...", user_id=user_id)
+        subtitle_path = generate_subtitle(
+            task_id, params, video_script, sub_maker, audio_file, user_id=user_id
+        )
+        
+        check_stop_status()
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=60, subtitle_path=subtitle_path, status_message="Subtitles generated.", user_id=user_id)
+
+        if stop_at == "subtitle":
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_COMPLETE,
+                progress=100,
+                subtitle_path=subtitle_path,
+                user_id=user_id
+            )
+            return {"subtitle_path": subtitle_path}
+
+        check_stop_status()
+        
+        # 5. Get video materials
+        logger.info("Step 5: Fetching video materials...")
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Downloading visual stock clips from Pexels...", user_id=user_id)
+        downloaded_videos = get_video_materials(
+            task_id, params, video_terms, audio_duration, user_id=user_id
+        )
+        if not downloaded_videos:
+            raise Exception("Failed to acquire video background materials.")
+
+        check_stop_status()
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=75, materials=downloaded_videos, status_message="Visual stock clips downloaded.", user_id=user_id)
+
+        if stop_at == "materials":
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_COMPLETE,
+                progress=100,
+                materials=downloaded_videos,
+                user_id=user_id
+            )
+            return {"materials": downloaded_videos}
+
+        check_stop_status()
+        
+        # 6. Generate final videos
+        logger.info("Step 6: Processing video transitions & rendering...")
+        if type(params.video_concat_mode) is str:
+            params.video_concat_mode = VideoConcatMode(params.video_concat_mode)
+
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Stitching final video & rendering subtitles via FFmpeg...", user_id=user_id)
+        final_video_paths, combined_video_paths = generate_final_videos(
+            task_id, params, downloaded_videos, audio_file, subtitle_path, user_id=user_id
+        )
+
+        if not final_video_paths:
+            raise Exception("Failed to render and stitch final compiled video.")
+
+        check_stop_status()
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=90, videos=final_video_paths, combined_videos=combined_video_paths, status_message="Video rendering finished.", user_id=user_id)
+        logger.success(f"Task {task_id} generated final local video files successfully.")
+
+        check_stop_status()
+        
+        # 7. Cloudinary cloud uploading
+        logger.info("Step 7: Uploading generated video to Cloudinary...")
+        from app.services.cloudinary_service import upload_to_cloudinary
+        cloudinary_url = ""
+        try:
+            sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Uploading generated video to Cloud CDN...", user_id=user_id)
+            cloudinary_url = upload_to_cloudinary(final_video_paths[0], user_id=user_id)
+        except Exception as cloud_err:
+            logger.warning(f"Non-fatal error uploading to Cloudinary: {cloud_err}")
+            
+        check_stop_status()
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=95, cloudinary_url=cloudinary_url, status_message="Cloud CDN upload finished.", user_id=user_id)
+
+        check_stop_status()
+        
+        # 8. Auto-upload to connected YouTube channel
+        logger.info("Step 8: Checking YouTube publishing status...")
+        from app.services import db
+        youtube_creds = db.get_youtube_credentials(user_id=user_id)
+        
+        youtube_uploaded_status = 0
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Uploading/publishing video directly to YouTube channel...", user_id=user_id)
+        if enable_auto_upload and youtube_creds:
+            logger.info("Auto-upload is enabled and connected channel found. Initializing YouTube upload...")
+            try:
+                from youtube_uploader import upload_video
+                title = params.video_subject or "Compiled Short Video"
+                description = f"#shorts #motivation #viral\nGenerated via Turbo Studio SaaS\nSubject: {title}"
+                upload_video(
+                    file_path=final_video_paths[0],
+                    title=title,
+                    description=description,
+                    tags=["shorts", "motivation", "viral"],
+                    privacy_status="public",
+                    user_id=user_id,
+                )
+                logger.info(f"✅ Auto-uploaded directly to YouTube: {final_video_paths[0]}")
+                youtube_uploaded_status = 1
+            except Exception as yt_err:
+                logger.error(f"⚠️ YouTube auto-publishing failed: {yt_err}")
+
+        # Final complete step
+        kwargs = {
+            "videos": final_video_paths,
+            "combined_videos": combined_video_paths,
+            "script": video_script,
+            "terms": video_terms,
+            "audio_file": audio_file,
+            "audio_duration": audio_duration,
+            "subtitle_path": subtitle_path,
+            "materials": downloaded_videos,
+            "cloudinary_url": cloudinary_url,
+            "cross_post_results": None,
+            "youtube_uploaded": youtube_uploaded_status,
+        }
+        sm.state.update_task(
+            task_id, state=const.TASK_STATE_COMPLETE, progress=100, status_message="SaaS Video Pipeline completed successfully!", user_id=user_id, **kwargs
+        )
+        
+        # Send successful run report email
+        try:
+            from app.services.email_service import send_pipeline_email
+            send_pipeline_email(
+                task_id=task_id,
+                state=const.TASK_STATE_COMPLETE,
+                progress=100,
+                subject=params.video_subject,
+                status_msg="SaaS Video Pipeline completed successfully!",
+                cdn_url=cloudinary_url,
+                user_id=user_id
+            )
+        except Exception as mail_err:
+            logger.error(f"Failed to send success email notification: {mail_err}")
+
+        return kwargs
+
+    except Exception as e:
+        # Check if the task was explicitly stopped/paused by the user
+        task = sm.state.get_task(task_id)
+        if task and task.get("state") == 3:
+            logger.info(f"Task {task_id} execution aborted cleanly because it was stopped/paused by user.")
+            return None
+
+        logger.error(f"Task {task_id} failed in start pipeline: {e}")
+        sm.state.update_task(
+            task_id,
+            state=const.TASK_STATE_FAILED,
+            error_message=str(e),
+            status_message=f"Pipeline error: {str(e)}",
+            user_id=user_id
+        )
+
+        # Send failure email notification
+        try:
+            from app.services.email_service import send_pipeline_email
+            subject_val = getattr(params, "video_subject", "")
+            send_pipeline_email(
+                task_id=task_id,
+                state=const.TASK_STATE_FAILED,
+                progress=0,
+                subject=subject_val,
+                status_msg=f"Pipeline error: {str(e)}",
+                error_msg=str(e),
+                user_id=user_id
+            )
+        except Exception as mail_err:
+            logger.error(f"Failed to send failure email notification: {mail_err}")
+
+        return None
+
 
 
 if __name__ == "__main__":

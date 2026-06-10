@@ -1,0 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
+@import "tailwindcss";
+
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 5%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+
+    --radius: 0.75rem;
+
+    --bg-dark: #050608;
+    --bg-card: rgba(10, 11, 18, 0.75);
+    --border-color: rgba(255, 255, 255, 0.06);
+    --accent-gold: #ffd700;
+  }
+}
+
+body {
+  margin: 0;
+  font-family: 'Outfit', sans-serif;
+  background-color: var(--bg-dark);
+  color: hsl(var(--foreground));
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Ensure cursor pointer on all clickable elements */
+button,
+select,
+input[type="checkbox"],
+input[type="radio"],
+input[type="submit"],
+a,
+[role="button"],
+.cursor-pointer {
+  cursor: pointer !important;
+}
+
+/* Glassmorphism panel styling */
+.glass-panel {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-panel:hover {
+  border-color: rgba(255, 215, 0, 0.15);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 25px rgba(255, 215, 0, 0.02);
+}
+
+/* Custom styles that make the UI look very high-end */
+.console-box {
+  background: #030406;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  font-family: 'Courier New', Courier, monospace;
+  padding: 16px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #a7f3d0;
+  box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.9);
+}
+
+.console-box::-webkit-scrollbar {
+  width: 6px;
+}
+.console-box::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.35), 0 0 10px rgba(59, 130, 246, 0.15);
+  }
+  50% {
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.35), 0 0 25px rgba(59, 130, 246, 0.55);
+    border-color: #60a5fa;
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2.5s infinite ease-in-out;
+}
+
+/* User avatar override */
+.user-avatar-clerk {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+}

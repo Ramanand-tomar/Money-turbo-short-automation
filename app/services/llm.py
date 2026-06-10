@@ -35,6 +35,105 @@ Generate a script for a video, depending on the subject of the video.
 8. respond in the same language as the video subject.
 """.strip()
 
+VIRAL_PROMPT_TEMPLATES = {
+    "viral_shorts": """
+# Role: Video Script Generator - Viral Shorts Mode
+## Objective:
+Generate a high-retention, extremely engaging short video script designed to go viral.
+## Key Rules:
+- Hook the user in the first 2 seconds with a shocking statement, a bold claim, or a highly intriguing question.
+- Pacing must be fast, rhythmic, and high-energy. Keep sentences very short and punchy.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- End with a strong Call to Action (CTA) or a loopable question that naturally flows back to the start.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip(),
+
+    "motivational": """
+# Role: Video Script Generator - Motivational Mode
+## Objective:
+Generate an emotionally resonant, deeply inspiring, and powerful motivational script.
+## Key Rules:
+- Start with a deep truth, a hard-hitting question, or a core struggle that everyone experiences.
+- Pacing should feel deliberate, dramatic, and emotionally building. Use powerful verbs and contrast.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- Inspire action, self-reflection, and a sense of triumph in the viewer.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip(),
+
+    "educational": """
+# Role: Video Script Generator - Educational Mode
+## Objective:
+Generate an informative, clear, and fascinating educational script.
+## Key Rules:
+- Start with a "Did you know?" style hook, a mind-blowing fact, or a counter-intuitive truth.
+- Break down complex ideas into simple, mind-blowing analogies. Avoid technical jargon.
+- Pacing should be informative yet engaging. Deliver high density of value.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- Keep the explanation extremely clear and fun.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip(),
+
+    "storytelling": """
+# Role: Video Script Generator - Storytelling Mode
+## Objective:
+Generate a narrative-driven, dramatic, and lesson-teaching storytelling script.
+## Key Rules:
+- Begin right in the middle of action or with a striking character detail.
+- Pacing should follow a clear rising action, a climax, and a resolution.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- Build suspense, curiosity, and emotional investment.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip(),
+
+    "listicle": """
+# Role: Video Script Generator - Listicle Mode
+## Objective:
+Generate a fast-paced, highly structured list format script.
+## Key Rules:
+- Hook with the ultimate promise (e.g. "Here are the top 3 secrets to..." or "3 signs you are...").
+- Deliver itemized points rapidly, keeping explanations concise.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- Keep the structure clean and list-oriented. Make points stand out clearly.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip(),
+
+    "trending_topic": """
+# Role: Video Script Generator - Trending Topic Mode
+## Objective:
+Generate a news-style or commentary script capitalizing on a recent viral trend or event.
+## Key Rules:
+- Hook by identifying the trend or event immediately.
+- Offer a unique angle, critical insight, or popular perspective.
+- Target platform is: {target_platform}.
+- Tone of delivery: {emotional_tone}.
+{trend_info}
+- Maintain a timely, relevant, and engaging commentary.
+- Do not include any brackets, narrator directions, voiceover labels, or title lines.
+- Write the raw script to be spoken.
+- Respond in the same language as the video subject.
+""".strip()
+}
+
 
 def _normalize_text_response(content, llm_provider: str) -> str:
     # 不同 LLM SDK 在异常或被拦截场景下，可能返回 None、空字符串，
@@ -73,7 +172,7 @@ def _extract_chat_completion_text(response, llm_provider: str) -> str:
     return _normalize_text_response(content, llm_provider)
 
 
-def _generate_response(prompt: str) -> str:
+def _generate_response(prompt: str, user_id: str = "global") -> str:
     try:
         content = ""
         llm_provider = config.app.get("llm_provider", "openai")
@@ -148,9 +247,16 @@ def _generate_response(prompt: str) -> str:
                 base_url = config.app.get("azure_base_url", "")
                 api_version = config.app.get("azure_api_version", "2024-02-15-preview")
             elif llm_provider == "gemini":
-                api_key = config.app.get("gemini_api_key")
-                model_name = config.app.get("gemini_model_name")
-                base_url = config.app.get("gemini_base_url", "")
+                from app.services import db
+                api_key = db.get_setting("gemini_api_key", user_id=user_id) or config.app.get("gemini_api_key")
+                if not api_key:
+                    for i in range(2, 6):
+                        k = db.get_setting(f"gemini_api_key_{i}", user_id=user_id)
+                        if k:
+                            api_key = k
+                            break
+                model_name = db.get_setting("gemini_model_name", user_id=user_id) or config.app.get("gemini_model_name")
+                base_url = db.get_setting("gemini_base_url", user_id=user_id) or config.app.get("gemini_base_url", "")
                 # Gemini 旧模型名已经陆续下线，这里自动兼容历史配置，
                 # 避免用户沿用旧值时直接收到 404。
                 if not model_name:
@@ -300,11 +406,20 @@ def _generate_response(prompt: str) -> str:
 
             if llm_provider == "gemini":
                 import google.generativeai as genai
+                from app.services import db
+                from app.services.email_service import send_pipeline_email
 
-                if not base_url:
-                    genai.configure(api_key=api_key, transport="rest")
-                else:
-                    genai.configure(api_key=api_key, transport="rest", client_options={'api_endpoint': base_url})
+                keys_to_try = []
+                key1 = db.get_setting("gemini_api_key", user_id=user_id) or config.app.get("gemini_api_key")
+                if key1:
+                    keys_to_try.append(key1)
+                for k_idx in range(2, 6):
+                    k_val = db.get_setting(f"gemini_api_key_{k_idx}", user_id=user_id) or config.app.get(f"gemini_api_key_{k_idx}")
+                    if k_val:
+                        keys_to_try.append(k_val)
+
+                if not keys_to_try:
+                    raise ValueError("Google Gemini API keys are not configured. Please add one in settings.")
 
                 generation_config = {
                     "temperature": 0.5,
@@ -332,25 +447,51 @@ def _generate_response(prompt: str) -> str:
                     },
                 ]
 
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    generation_config=generation_config,
-                    safety_settings=safety_settings,
-                )
+                errors = []
+                success_text = None
+                for idx, current_key in enumerate(keys_to_try):
+                    logger.info(f"Attempting Gemini generation (Key {idx+1}/{len(keys_to_try)})")
+                    try:
+                        if not base_url:
+                            genai.configure(api_key=current_key, transport="rest")
+                        else:
+                            genai.configure(api_key=current_key, transport="rest", client_options={'api_endpoint': base_url})
 
+                        model = genai.GenerativeModel(
+                            model_name=model_name,
+                            generation_config=generation_config,
+                            safety_settings=safety_settings,
+                        )
+
+                        response = model.generate_content(prompt)
+                        candidates = response.candidates
+                        generated_text = candidates[0].content.parts[0].text
+                        success_text = _normalize_text_response(generated_text, llm_provider)
+                        break
+                    except Exception as e:
+                        logger.error(f"Gemini API key {idx+1} failed during generation: {e}")
+                        errors.append(f"Key {idx+1}: {str(e)}")
+
+                if success_text is not None:
+                    return success_text
+
+                # If all configured keys failed
+                combined_errors = " | ".join(errors)
+                logger.error("All configured Gemini API keys failed!")
                 try:
-                    response = model.generate_content(prompt)
-                    candidates = response.candidates
-                    generated_text = candidates[0].content.parts[0].text
-                except (AttributeError, IndexError) as e:
-                    logger.warning(
-                        f"gemini returned invalid response content: {str(e)}"
+                    send_pipeline_email(
+                        task_id="gemini-llm-failure-alert",
+                        state=-1,
+                        progress=0,
+                        subject="Gemini API Key Fallback Failure Alert",
+                        status_msg="All configured Gemini API keys failed during script generation.",
+                        error_msg=f"Encountered errors on all fallback keys:\n{combined_errors}",
+                        user_id=user_id
                     )
-                    raise ValueError(
-                        f"[{llm_provider}] returned invalid response content"
-                    )
+                except Exception as mail_err:
+                    logger.error(f"Failed to send Gemini fallback failure email: {mail_err}")
 
-                return _normalize_text_response(generated_text, llm_provider)
+                raise ValueError(f"All configured Gemini API keys failed: {combined_errors}")
 
             if llm_provider == "cloudflare":
                 response = requests.post(
@@ -540,6 +681,11 @@ def build_script_prompt(
     paragraph_number: int = 1,
     video_script_prompt: str = "",
     custom_system_prompt: str = "",
+    video_duration: int = 30,
+    prompt_mode: str = "viral_shorts",
+    target_platform: str = "youtube_shorts",
+    emotional_tone: str = "inspiring",
+    trend_context: str = "",
 ) -> str:
     paragraph_number = _normalize_script_paragraph_number(paragraph_number)
     video_script_prompt = _limit_script_text(
@@ -549,14 +695,26 @@ def build_script_prompt(
         custom_system_prompt, MAX_SCRIPT_SYSTEM_PROMPT_LENGTH, "custom_system_prompt"
     )
 
-    # 将“脚本生成规则”和“运行时上下文”分开拼接。这样高级用户即使覆盖默认
-    # system prompt，也不会漏掉视频主题、语言、段落数这些每次生成都必须带上的参数。
-    prompt = custom_system_prompt or DEFAULT_SCRIPT_SYSTEM_PROMPT
-    prompt += f"""
+    # Calculate word count constraint based on duration (avg 140 WPM = 2.3 words/sec)
+    duration_constraint = ""
+    if video_duration and video_duration > 0:
+        word_count = int(video_duration * 2.3)
+        duration_constraint = f"\n- target duration: {video_duration} seconds\n- target script length: approximately {word_count} words"
+
+    # Select prompt template
+    template = VIRAL_PROMPT_TEMPLATES.get(prompt_mode, VIRAL_PROMPT_TEMPLATES["viral_shorts"])
+    trend_info = f"- Trend context / current event: {trend_context}" if trend_context else ""
+    base_prompt = custom_system_prompt or template.format(
+        target_platform=target_platform,
+        emotional_tone=emotional_tone,
+        trend_info=trend_info
+    )
+
+    prompt = base_prompt + f"""
 
 # Initialization:
 - video subject: {video_subject}
-- number of paragraphs: {paragraph_number}
+- number of paragraphs: {paragraph_number}{duration_constraint}
 """.rstrip()
     if language:
         prompt += f"\n- language: {language}"
@@ -576,7 +734,28 @@ def generate_script(
     paragraph_number: int = 1,
     video_script_prompt: str = "",
     custom_system_prompt: str = "",
+    video_duration: int = 30,
+    user_id: str = "global",
+    prompt_mode: str = "viral_shorts",
+    target_platform: str = "youtube_shorts",
+    emotional_tone: str = "inspiring",
+    trend_context: str = "",
 ) -> str:
+    # Dynamically adjust paragraph count based on target duration
+    if video_duration and video_duration > 0:
+        if video_duration <= 15:
+            paragraph_number = 1
+        elif video_duration <= 30:
+            paragraph_number = 2
+        elif video_duration <= 60:
+            paragraph_number = 3
+        elif video_duration <= 90:
+            paragraph_number = 4
+        elif video_duration <= 120:
+            paragraph_number = 5
+        else:
+            paragraph_number = 6
+
     paragraph_number = _normalize_script_paragraph_number(paragraph_number)
     video_script_prompt = _limit_script_text(
         video_script_prompt, MAX_SCRIPT_PROMPT_LENGTH, "video_script_prompt"
@@ -590,11 +769,16 @@ def generate_script(
         paragraph_number=paragraph_number,
         video_script_prompt=video_script_prompt,
         custom_system_prompt=custom_system_prompt,
+        video_duration=video_duration,
+        prompt_mode=prompt_mode,
+        target_platform=target_platform,
+        emotional_tone=emotional_tone,
+        trend_context=trend_context,
     )
     final_script = ""
     logger.info(
-        "generating video script: "
-        f"subject={video_subject}, paragraph_number={paragraph_number}, "
+        f"generating video script for user {user_id}: "
+        f"subject={video_subject}, paragraph_number={paragraph_number}, video_duration={video_duration}, "
         f"has_custom_prompt={bool(video_script_prompt.strip())}, "
         f"has_custom_system_prompt={bool(custom_system_prompt.strip())}"
     )
@@ -620,7 +804,7 @@ def generate_script(
 
     for i in range(_max_retries):
         try:
-            response = _generate_response(prompt=prompt)
+            response = _generate_response(prompt=prompt, user_id=user_id)
             if response:
                 final_script = format_response(response)
             else:
@@ -644,7 +828,7 @@ def generate_script(
     return final_script.strip()
 
 
-def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
+def generate_terms(video_subject: str, video_script: str, amount: int = 5, user_id: str = "global") -> List[str]:
     prompt = f"""
 # Role: Video Search Terms Generator
 
@@ -671,13 +855,13 @@ Generate {amount} search terms for stock videos, depending on the subject of a v
 Please note that you must use English for generating video search terms; Chinese is not accepted.
 """.strip()
 
-    logger.info(f"subject: {video_subject}")
+    logger.info(f"subject: {video_subject} for user {user_id}")
 
     search_terms = []
     response = ""
     for i in range(_max_retries):
         try:
-            response = _generate_response(prompt)
+            response = _generate_response(prompt, user_id=user_id)
             if "Error: " in response:
                 logger.error(f"failed to generate video script: {response}")
                 return response
@@ -708,6 +892,101 @@ Please note that you must use English for generating video search terms; Chinese
 
     logger.success(f"completed: \n{search_terms}")
     return search_terms
+
+def score_script_virality(script: str, user_id: str = "global") -> dict:
+    prompt = f"""
+# Role: Video Script Virality Predictor
+## Objective:
+Analyze the provided video script and predict its virality scores across 5 key dimensions.
+## Dimensions:
+1. hook_score (1-10): How engaging are the first 3 seconds?
+2. emotion_score (1-10): Does it tap into a core human emotion (shock, curiosity, urgency, empathy, awe)?
+3. clarity_score (1-10): Is the message simple and easy to understand?
+4. pacing_score (1-10): Is the structure and syntax optimized for fast, rhythmic delivery?
+5. cta_score (1-10): Is there a strong call to action or a loopable ending?
+
+## Overall Score Calculation:
+Provide an overall_score (percentage out of 100) calculated based on the dimensions, showing general virality potential.
+
+## Improvement Tip:
+Provide a highly specific, actionable sentence of improvement advice.
+
+## Output Format:
+Return ONLY a raw JSON object with the keys:
+"hook_score", "emotion_score", "clarity_score", "pacing_score", "cta_score", "overall_score", "improvement_tip"
+
+## Script to Analyze:
+{script}
+""".strip()
+
+    try:
+        response = _generate_response(prompt=prompt, user_id=user_id)
+        if "Error: " in response:
+            raise ValueError(response)
+        
+        # Clean response
+        clean_response = response.strip()
+        if clean_response.startswith("```"):
+            lines = clean_response.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].startswith("```"):
+                lines = lines[:-1]
+            clean_response = "\n".join(lines).strip()
+            
+        # Parse the JSON
+        data = json.loads(clean_response)
+        
+        # Validate structure and default keys if missing
+        scores = {
+            "hook_score": int(data.get("hook_score", 5)),
+            "emotion_score": int(data.get("emotion_score", 5)),
+            "clarity_score": int(data.get("clarity_score", 5)),
+            "pacing_score": int(data.get("pacing_score", 5)),
+            "cta_score": int(data.get("cta_score", 5)),
+            "overall_score": int(data.get("overall_score", 50)),
+            "improvement_tip": str(data.get("improvement_tip", "Make the hook punchier."))
+        }
+        return scores
+    except Exception as e:
+        logger.error(f"Failed to score script: {e}")
+        return {
+            "hook_score": 5,
+            "emotion_score": 5,
+            "clarity_score": 5,
+            "pacing_score": 5,
+            "cta_score": 5,
+            "overall_score": 50,
+            "improvement_tip": "Make the hook punchier and enhance the pacing."
+        }
+
+
+def inject_emojis_into_script(script: str, user_id: str = "global") -> str:
+    prompt = f"""
+Add 1-2 relevant emojis at natural pause points in this script. Return the script with emojis inserted.
+Only return the final script with emojis. Do not add any introduction, explanation, or wrap the script in markdown code blocks.
+
+Script:
+{script}
+""".strip()
+    logger.info(f"injecting emojis into script for user {user_id}")
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt, user_id=user_id)
+            if response and not response.startswith("Error:"):
+                # Clean up any potential markdown code blocks if the model returned them
+                cleaned = response.strip()
+                if cleaned.startswith("```"):
+                    lines = cleaned.splitlines()
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    cleaned = "\n".join(lines).strip()
+                return cleaned
+        except Exception as e:
+            logger.warning(f"failed to inject emojis: {str(e)}")
+    return script
 
 
 if __name__ == "__main__":

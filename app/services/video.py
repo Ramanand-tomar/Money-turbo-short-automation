@@ -346,6 +346,54 @@ def get_bgm_file(bgm_type: str = "random", bgm_file: str = ""):
     return ""
 
 
+def detect_beats(audio_file: str) -> List[float]:
+    try:
+        import librosa
+        logger.info(f"Attempting librosa beat detection for {audio_file}")
+        y, sr = librosa.load(audio_file, sr=None)
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+        times = [float(t) for t in beat_times]
+        logger.info(f"Librosa successfully detected {len(times)} beats.")
+        return times
+    except Exception as e:
+        logger.warning(f"Librosa beat detection failed: {e}. Falling back to amplitude-energy peak detection.")
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(audio_file)
+            chunk_ms = 100
+            chunks = [audio[i:i+chunk_ms] for i in range(0, len(audio), chunk_ms)]
+            rms_values = [chunk.rms for chunk in chunks]
+            beats = []
+            local_win = 5
+            for idx, rms in enumerate(rms_values):
+                start_win = max(0, idx - local_win)
+                end_win = min(len(rms_values), idx + local_win + 1)
+                local_avg = sum(rms_values[start_win:end_win]) / (end_win - start_win)
+                if rms > local_avg * 1.3 and rms > 1000:
+                    is_peak = True
+                    for j in range(max(0, idx-2), min(len(rms_values), idx+3)):
+                        if rms_values[j] > rms:
+                            is_peak = False
+                            break
+                    if is_peak:
+                        beats.append(idx * (chunk_ms / 1000.0))
+            logger.info(f"Fallback detected {len(beats)} energy peaks.")
+            return beats
+        except Exception as fallback_err:
+            logger.error(f"Fallback beat detection failed: {fallback_err}")
+            from pydub import AudioSegment
+            try:
+                audio = AudioSegment.from_file(audio_file)
+                duration_sec = len(audio) / 1000.0
+            except Exception:
+                duration_sec = 30.0
+            interval = 0.5
+            beats = [i * interval for i in range(1, int(duration_sec / interval))]
+            logger.info(f"Default fallback generated {len(beats)} beats at 120 BPM.")
+            return beats
+
+
 def combine_videos(
     combined_video_path: str,
     video_paths: List[str],
@@ -355,18 +403,17 @@ def combine_videos(
     video_transition_mode: VideoTransitionMode = None,
     max_clip_duration: int = 5,
     threads: int = 2,
+    ken_burns: bool = True,
+    beat_sync: bool = False,
 ) -> str:
     audio_clip = AudioFileClip(audio_file)
     try:
-        # 这里只需要读取旁白音频时长来决定素材视频拼接长度；后续不会再使用
-        # audio_clip。读取完成后立即关闭，避免早退或异常路径泄漏文件句柄。
         audio_duration = audio_clip.duration
     finally:
         close_clip(audio_clip)
     logger.info(f"audio duration: {audio_duration} seconds")
     logger.info(f"maximum clip duration: {max_clip_duration} seconds")
 
-    # 兼容 API 直接调用时未传转场模式的情况，避免后续访问 .value 时崩溃。
     transition_value = getattr(video_transition_mode, "value", video_transition_mode)
     output_dir = os.path.dirname(combined_video_path)
 
@@ -387,9 +434,6 @@ def combine_videos(
         while start_time < clip_duration:
             end_time = min(start_time + max_clip_duration, clip_duration)
 
-            # 保留所有有效分段。
-            # 这样既不会丢掉“整段视频本身就短于 max_clip_duration”的素材，
-            # 也不会吞掉长视频最后剩下的一小段尾部内容。
             if end_time > start_time:
                 subclipped_items.append(
                     SubClippedVideoClip(
@@ -413,11 +457,59 @@ def combine_videos(
         
     logger.debug(f"total subclipped items: {len(subclipped_items)}")
     
+    # Calculate beat sync cut points
+    if beat_sync:
+        beat_times = detect_beats(audio_file)
+        cut_timestamps = []
+        last_cut = 0.0
+        min_interval = 2.0
+        for beat in beat_times:
+            if beat - last_cut >= min_interval:
+                if beat - last_cut > max_clip_duration:
+                    curr = last_cut + max_clip_duration
+                    while curr < beat:
+                        cut_timestamps.append(curr)
+                        last_cut = curr
+                        curr += max_clip_duration
+                cut_timestamps.append(beat)
+                last_cut = beat
+        
+        curr = last_cut
+        while curr < audio_duration:
+            next_target = curr + random.uniform(2.5, 4.0)
+            closest_beat = None
+            for beat in beat_times:
+                if beat > curr + 1.5:
+                    if closest_beat is None or abs(beat - next_target) < abs(closest_beat - next_target):
+                        closest_beat = beat
+            if closest_beat and closest_beat < audio_duration:
+                cut_timestamps.append(closest_beat)
+                curr = closest_beat
+            else:
+                curr = min(audio_duration, next_target)
+                if curr < audio_duration:
+                    cut_timestamps.append(curr)
+                else:
+                    break
+        
+        target_durations = []
+        prev = 0.0
+        for cut in cut_timestamps:
+            target_durations.append(cut - prev)
+            prev = cut
+        if prev < audio_duration:
+            target_durations.append(audio_duration - prev)
+        logger.info(f"Beat sync active. Generated target clip durations: {target_durations}")
+    else:
+        target_durations = None
+
     # Add downloaded clips over and over until the duration of the audio (max_duration) has been reached
     for i, subclipped_item in enumerate(subclipped_items):
         if video_duration >= audio_duration:
             break
         
+        current_target_dur = target_durations[i] if (target_durations is not None and i < len(target_durations)) else max_clip_duration
+
         logger.debug(
             f"processing clip {i+1}: {subclipped_item.width}x{subclipped_item.height}, "
             f"source: {os.path.basename(subclipped_item.source_file_path)}, "
@@ -426,10 +518,15 @@ def combine_videos(
         )
         
         try:
-            clip = _open_video_clip_quietly(subclipped_item.file_path).subclipped(
-                subclipped_item.start_time, subclipped_item.end_time
-            )
+            source_clip = _open_video_clip_quietly(subclipped_item.file_path)
+            source_total_dur = source_clip.duration
+            s_start = subclipped_item.start_time
+            s_end = min(s_start + current_target_dur, source_total_dur)
+            if s_end - s_start < 0.5:
+                s_start = max(0.0, s_end - current_target_dur)
+            clip = source_clip.subclipped(s_start, s_end)
             clip_duration = clip.duration
+            
             # Not all videos are same size, so we need to resize them
             clip_w, clip_h = clip.size
             if clip_w != video_width or clip_h != video_height:
@@ -447,6 +544,9 @@ def combine_videos(
 
                     new_width = int(clip_w * scale_factor)
                     new_height = int(clip_h * scale_factor)
+                    # Enforce even dimensions to prevent codec/stride corruption (scrambled zigzag lines)
+                    new_width = new_width - (new_width % 2)
+                    new_height = new_height - (new_height % 2)
 
                     background = ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_duration(clip_duration)
                     clip_resized = clip.resized(new_size=(new_width, new_height)).with_position("center")
@@ -463,18 +563,35 @@ def combine_videos(
                 clip = video_effects.slidein_transition(clip, 1, shuffle_side)
             elif transition_value == VideoTransitionMode.slide_out.value:
                 clip = video_effects.slideout_transition(clip, 1, shuffle_side)
+            elif transition_value == "Glitch":
+                if i == 0:
+                    clip = video_effects.glitch_single_clip(clip, 0.3, "end")
+                elif i == len(subclipped_items) - 1:
+                    clip = video_effects.glitch_single_clip(clip, 0.3, "start")
+                else:
+                    clip = video_effects.glitch_single_clip(clip, 0.3, "both")
             elif transition_value == VideoTransitionMode.shuffle.value:
                 transition_funcs = [
                     lambda c: video_effects.fadein_transition(c, 1),
                     lambda c: video_effects.fadeout_transition(c, 1),
                     lambda c: video_effects.slidein_transition(c, 1, shuffle_side),
                     lambda c: video_effects.slideout_transition(c, 1, shuffle_side),
+                    lambda c: video_effects.glitch_single_clip(c, 0.3, "both")
                 ]
                 shuffle_transition = random.choice(transition_funcs)
                 clip = shuffle_transition(clip)
 
-            if clip.duration > max_clip_duration:
-                clip = clip.subclipped(0, max_clip_duration)
+            if ken_burns:
+                direction = "in" if i % 2 == 0 else "out"
+                clip = video_effects.ken_burns_zoom(clip, zoom_ratio=1.05, direction=direction)
+
+            if clip.duration > current_target_dur:
+                clip = clip.subclipped(0, current_target_dur)
+            elif clip.duration < current_target_dur:
+                factor = clip.duration / current_target_dur
+                if factor >= 0.1:
+                    clip = clip.with_speed_scaled(factor)
+            clip = clip.with_duration(current_target_dur)
                 
             # wirte clip to temp file
             clip_file = f"{output_dir}/temp-clip-{i+1}.mp4"
@@ -758,25 +875,53 @@ def generate_video(
         _clip = _clip.with_start(subtitle_item[0][0])
         _clip = _clip.with_end(subtitle_item[0][1])
         _clip = _clip.with_duration(duration)
+        # Determine final_y based on position
         if params.subtitle_position == "bottom":
-            _clip = _clip.with_position(("center", video_height * 0.95 - _clip.h))
+            if aspect == VideoAspect.portrait:
+                final_y = video_height * 0.70 - _clip.h
+            else:
+                final_y = video_height * 0.85 - _clip.h
         elif params.subtitle_position == "top":
-            _clip = _clip.with_position(("center", video_height * 0.05))
+            final_y = video_height * 0.05
         elif params.subtitle_position == "custom":
-            # Ensure the subtitle is fully within the screen bounds
-            margin = 10  # Additional margin, in pixels
+            margin = 10
             max_y = video_height - _clip.h - margin
             min_y = margin
             custom_y = (video_height - _clip.h) * (params.custom_position / 100)
-            custom_y = max(
-                min_y, min(custom_y, max_y)
-            )  # Constrain the y value within the valid range
-            _clip = _clip.with_position(("center", custom_y))
-        else:  # center
-            _clip = _clip.with_position(("center", "center"))
+            final_y = max(min_y, min(custom_y, max_y))
+        else:
+            final_y = (video_height - _clip.h) / 2.0
+
+        sub_anim = getattr(params, "subtitle_animation", "static")
+        if sub_anim == "pop":
+            scale_func = lambda t: 0.85 + 0.15 * (t / 0.15) if t < 0.15 else 1.0
+            _clip = _clip.resized(scale_func)
+            base_w = _clip.w
+            base_h = _clip.h
+            pos_func = lambda t: (
+                (video_width - base_w * scale_func(t)) / 2.0,
+                final_y + (base_h - base_h * scale_func(t)) / 2.0
+            )
+            _clip = _clip.with_position(pos_func)
+        elif sub_anim == "slide_up":
+            pos_func = lambda t: (
+                "center",
+                final_y + 20.0 - 20.0 * (t / 0.2) if t < 0.2 else final_y
+            )
+            _clip = _clip.with_position(pos_func)
+        else:
+            _clip = _clip.with_position(("center", final_y))
+            
         return _clip
 
     video_clip = _open_video_clip_quietly(video_path)
+    
+    # Apply color grade if present
+    color_preset = getattr(params, "color_grade_preset", "none")
+    if color_preset and color_preset != "none":
+        from app.services.utils import video_effects
+        video_clip = video_effects.color_grade(video_clip, color_preset)
+
     audio_clip = AudioFileClip(audio_path).with_effects(
         [afx.MultiplyVolume(params.voice_volume)]
     )

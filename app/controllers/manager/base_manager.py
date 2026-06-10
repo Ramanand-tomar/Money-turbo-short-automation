@@ -16,6 +16,12 @@ class TaskManager:
         self.lock = threading.Lock()
         self.queue = self.create_queue()
 
+    def update_limits(self, max_concurrent: int, max_queued: int):
+        with self.lock:
+            self.max_concurrent_tasks = max_concurrent
+            self.max_queued_tasks = max_queued
+            logger.info(f"Updated TaskManager limits: max_concurrent_tasks={max_concurrent}, max_queued_tasks={max_queued}")
+
     def create_queue(self):
         raise NotImplementedError()
 
@@ -41,6 +47,24 @@ class TaskManager:
                     f"enqueue task: {func.__name__}, current_tasks: {self.current_tasks}, "
                     f"queue_size: {queue_size}"
                 )
+                
+                # Update enqueued status in database
+                task_id = kwargs.get("task_id")
+                user_id = kwargs.get("user_id", "global")
+                if task_id:
+                    try:
+                        from app.services import state as sm
+                        position = queue_size + 1
+                        sm.state.update_task(
+                            task_id,
+                            state=0,
+                            progress=0,
+                            status_message=f"Queued (position {position} in queue)",
+                            user_id=user_id
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to set enqueued task DB status: {err}")
+
                 self.enqueue({"func": func, "args": args, "kwargs": kwargs})
 
     def execute_task(self, func: Callable, *args: Any, **kwargs: Any):
@@ -67,7 +91,27 @@ class TaskManager:
                 func = task_info["func"]
                 args = task_info.get("args", ())
                 kwargs = task_info.get("kwargs", {})
+                
+                # Update dequeued task status to processing in DB immediately to avoid race condition
+                task_id = kwargs.get("task_id")
+                user_id = kwargs.get("user_id", "global")
+                if task_id:
+                    try:
+                        from app.services import state as sm
+                        sm.state.update_task(
+                            task_id,
+                            state=4,
+                            progress=5,
+                            status_message="Initializing video generation pipeline...",
+                            user_id=user_id
+                        )
+                        # Now update other queued tasks' positions
+                        sm.state.update_queued_positions()
+                    except Exception as err:
+                        logger.warning(f"Failed to update task status on dequeue: {err}")
+
                 self.execute_task(func, *args, **kwargs)
+
 
     def task_done(self):
         with self.lock:

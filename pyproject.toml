@@ -31,6 +31,19 @@ dependencies = [
     "socksio==1.0.0",
     "pydub==0.25.1",
     "litellm==1.60.0",
+    "google-api-python-client>=2.128.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
+    "psycopg2-binary>=2.9.12",
+    "cloudinary>=1.44.2",
+    "pyjwt[crypto]>=2.8.0",
+    "pytrends>=4.9.2",
+    "lxml>=6.1.1",
+    "librosa>=0.10.1",
+    "apscheduler>=3.10.4",
+    "slowapi>=0.1.9",
+    "sentry-sdk[fastapi]>=2.0.0",
+    "bleach>=6.1.0",
 ]
 
 [project.optional-dependencies]

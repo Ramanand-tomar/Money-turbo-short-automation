@@ -1,9 +1,11 @@
 import warnings
+import os
+import re
 from enum import Enum
 from typing import Any, List, Optional, Union
 
 import pydantic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import config
 
@@ -27,6 +29,7 @@ class VideoTransitionMode(str, Enum):
     fade_out = "FadeOut"
     slide_in = "SlideIn"
     slide_out = "SlideOut"
+    glitch = "Glitch"
 
 
 class VideoAspect(str, Enum):
@@ -71,10 +74,31 @@ class VideoParams(BaseModel):
     """
 
     video_subject: str
+
+    @field_validator("video_subject", mode="before")
+    @classmethod
+    def sanitize_video_subject(cls, v: str) -> str:
+        """Strip HTML tags, enforce length bounds, and reject dangerous patterns."""
+        if not isinstance(v, str):
+            raise ValueError("video_subject must be a string")
+        # Strip HTML/XML tags
+        clean = re.sub(r"<[^>]+>", "", v).strip()
+        # Remove null bytes and non-printable control chars
+        clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", clean)
+        if len(clean) < 3:
+            raise ValueError("video_subject must be at least 3 characters")
+        if len(clean) > 200:
+            raise ValueError("video_subject must be at most 200 characters")
+        return clean
+
+    prompt_mode: str = "viral_shorts"
+    target_platform: str = "youtube_shorts"
+    emotional_tone: str = "inspiring"
+    trend_context: str = ""
     video_script: str = ""  # Script used to generate the video
     video_terms: Optional[str | list] = None  # Keywords used to generate the video
-    video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
-    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
+    video_aspect: Optional[VideoAspect] = VideoAspect.portrait
+    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     video_count: Optional[int] = 1
@@ -102,12 +126,70 @@ class VideoParams(BaseModel):
     text_background_color: Union[bool, str] = True
     rounded_subtitle_background: bool = False
 
+    color_grade_preset: Optional[str] = "none"
+    beat_sync: Optional[bool] = False
+    subtitle_animation: Optional[str] = "static"
+    emoji_subtitles: Optional[bool] = False
+    ken_burns: Optional[bool] = True
+
     font_size: int = 60
     stroke_color: Optional[str] = "#000000"
     stroke_width: float = 1.5
     n_threads: Optional[int] = 2
     paragraph_number: int = Field(default=1, ge=1, le=10)
+    video_duration: Optional[int] = 30
     video_script_prompt: str = Field(default="", max_length=2000)
+
+    @field_validator("video_script_prompt", mode="before")
+    @classmethod
+    def sanitize_video_script_prompt(cls, v: str) -> str:
+        """Strip HTML tags from the prompt field."""
+        if not v:
+            return v
+        clean = re.sub(r"<[^>]+>", "", str(v)).strip()
+        clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", clean)
+        return clean
+
+    @field_validator("voice_name", mode="before")
+    @classmethod
+    def validate_voice_name(cls, v: str) -> str:
+        """Allow empty string (system picks default) or any well-formed TTS voice identifier.
+        Rejects values containing path traversal sequences or shell-injection characters.
+        """
+        if not v:
+            return v
+        # Allowlist pattern: letters, digits, hyphens, underscores, dots, spaces
+        if not re.match(r"^[\w\s\-\.]+$", str(v), flags=re.UNICODE):
+            raise ValueError(
+                f"voice_name '{v}' contains invalid characters. "
+                "Only letters, digits, hyphens, underscores, dots, and spaces are allowed."
+            )
+        return str(v).strip()
+
+    @field_validator("font_name", mode="before")
+    @classmethod
+    def validate_font_name(cls, v: str) -> str:
+        """Verify the font file exists in resource/fonts/. Prevents path traversal."""
+        if not v:
+            return v
+        font_val = str(v).strip()
+        # Reject path separators
+        if "/" in font_val or "\\" in font_val or ".." in font_val:
+            raise ValueError(
+                f"font_name '{font_val}' contains invalid path characters."
+            )
+        fonts_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+            "resource", "fonts"
+        )
+        candidate = os.path.join(fonts_dir, font_val)
+        if not os.path.isfile(candidate):
+            # Soft-warn: many deployments may not have all fonts; do not hard-reject
+            import logging
+            logging.getLogger("uvicorn.error").warning(
+                f"font_name '{font_val}' not found in resource/fonts/. Proceeding anyway."
+            )
+        return font_val
     custom_system_prompt: str = Field(default="", max_length=8000)
 
 
@@ -160,6 +242,10 @@ class VideoScriptParams:
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
+    prompt_mode: Optional[str] = "viral_shorts"
+    target_platform: Optional[str] = "youtube_shorts"
+    emotional_tone: Optional[str] = "inspiring"
+    trend_context: Optional[str] = ""
 
 
 class VideoTermsParams:
@@ -198,6 +284,11 @@ class VideoScriptRequest(VideoScriptParams, BaseModel):
 
 class VideoTermsRequest(VideoTermsParams, BaseModel):
     pass
+
+
+class ScriptScoreRequest(BaseModel):
+    script: str
+    platform: Optional[str] = "youtube_shorts"
 
 
 ######################################################################################################

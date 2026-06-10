@@ -34,7 +34,20 @@ def _get_tls_verify() -> bool:
     return bool(tls_verify)
 
 
-def get_api_key(cfg_key: str):
+def get_api_key(cfg_key: str, user_id: str = "global"):
+    # 1. Try reading user scoped key from database settings first
+    from app.services import db
+    db_key = cfg_key
+    if cfg_key == "pexels_api_keys":
+        db_key = "pexels_api_key"
+    elif cfg_key == "pixabay_api_keys":
+        db_key = "pixabay_api_key"
+        
+    db_val = db.get_setting(db_key, user_id=user_id)
+    if db_val:
+        return db_val
+
+    # 2. Fallback to config
     api_keys = config.app.get(cfg_key)
     if not api_keys:
         raise ValueError(
@@ -56,11 +69,12 @@ def search_videos_pexels(
     search_term: str,
     minimum_duration: int,
     video_aspect: VideoAspect = VideoAspect.portrait,
+    user_id: str = "global",
 ) -> List[MaterialInfo]:
     aspect = VideoAspect(video_aspect)
     video_orientation = aspect.name
     video_width, video_height = aspect.to_resolution()
-    api_key = get_api_key("pexels_api_keys")
+    api_key = get_api_key("pexels_api_keys", user_id=user_id)
     headers = {
         "Authorization": api_key,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -113,12 +127,13 @@ def search_videos_pixabay(
     search_term: str,
     minimum_duration: int,
     video_aspect: VideoAspect = VideoAspect.portrait,
+    user_id: str = "global",
 ) -> List[MaterialInfo]:
     aspect = VideoAspect(video_aspect)
 
     video_width, video_height = aspect.to_resolution()
 
-    api_key = get_api_key("pixabay_api_keys")
+    api_key = get_api_key("pixabay_api_keys", user_id=user_id)
     # Build URL
     params = {
         "q": search_term,
@@ -233,6 +248,7 @@ def download_videos(
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
+    user_id: str = "global",
 ) -> List[str]:
     valid_video_items = []
     valid_video_urls = []
@@ -246,8 +262,9 @@ def download_videos(
             search_term=search_term,
             minimum_duration=max_clip_duration,
             video_aspect=video_aspect,
+            user_id=user_id,
         )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
+        logger.info(f"found {len(video_items)} videos for '{search_term}' for user {user_id}")
 
         for item in video_items:
             if item.url not in valid_video_urls:
@@ -262,7 +279,7 @@ def download_videos(
 
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":
-        material_directory = utils.task_dir(task_id)
+        material_directory = utils.task_dir(task_id, user_id)
     elif material_directory and not os.path.isdir(material_directory):
         material_directory = ""
 

@@ -85,13 +85,34 @@ def resource_dir(sub_dir: str = ""):
     return d
 
 
-def task_dir(sub_dir: str = ""):
-    d = os.path.join(storage_dir(), "tasks")
+def task_dir(sub_dir: str = "", user_id: str = ""):
     if sub_dir:
-        d = os.path.join(d, sub_dir)
-    if not os.path.exists(d):
-        os.makedirs(d)
-    return d
+        if user_id:
+            new_path = os.path.join(root_dir(), "storage", "tasks", user_id, sub_dir)
+            if os.path.exists(new_path):
+                return new_path
+            
+            old_path = os.path.join(root_dir(), "output", sub_dir)
+            if os.path.exists(old_path):
+                return old_path
+            
+            os.makedirs(new_path, exist_ok=True)
+            return new_path
+        else:
+            old_path = os.path.join(root_dir(), "output", sub_dir)
+            if os.path.exists(old_path):
+                return old_path
+            
+            global_path = os.path.join(root_dir(), "storage", "tasks", "global", sub_dir)
+            os.makedirs(global_path, exist_ok=True)
+            return global_path
+    else:
+        if user_id:
+            d = os.path.join(root_dir(), "storage", "tasks", user_id)
+        else:
+            d = os.path.join(root_dir(), "storage", "tasks")
+        os.makedirs(d, exist_ok=True)
+        return d
 
 
 def font_dir(sub_dir: str = ""):

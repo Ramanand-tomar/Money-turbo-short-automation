@@ -1,0 +1,29 @@
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim-bullseye
+
+# Set environment variables
+ENV PYTHONPATH="/MoneyPrinterTurbo"
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8085
+
+# Set the working directory in the container
+WORKDIR /MoneyPrinterTurbo
+
+# Install system dependencies (git, FFmpeg)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file and install python packages
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the workspace files (including resource/public with React build)
+COPY . .
+
+# Expose port (overridden dynamically by Hugging Face / Render at runtime)
+EXPOSE 8085
+
+# Command to run the FastAPI server
+CMD ["python", "main.py"]

@@ -756,6 +756,42 @@
     "gender": "Female"
   },
   {
+    "name": "hi-IN-AaravNeural",
+    "gender": "Male"
+  },
+  {
+    "name": "hi-IN-AnanyaNeural",
+    "gender": "Female"
+  },
+  {
+    "name": "hi-IN-KavyanjaliNeural",
+    "gender": "Female"
+  },
+  {
+    "name": "hi-IN-NiharikaNeural",
+    "gender": "Female"
+  },
+  {
+    "name": "hi-IN-KavyaNeural",
+    "gender": "Female"
+  },
+  {
+    "name": "hi-IN-KunalNeural",
+    "gender": "Male"
+  },
+  {
+    "name": "hi-IN-RehaanNeural",
+    "gender": "Male"
+  },
+  {
+    "name": "hi-IN-AartiNeural",
+    "gender": "Female"
+  },
+  {
+    "name": "hi-IN-ArjunNeural",
+    "gender": "Male"
+  },
+  {
     "name": "hr-HR-GabrijelaNeural",
     "gender": "Female"
   },

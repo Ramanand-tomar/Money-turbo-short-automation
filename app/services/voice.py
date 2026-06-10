@@ -202,15 +202,32 @@ def is_mimo_voice(voice_name: str):
     return voice_name.startswith("mimo:")
 
 
+def is_sarvam_voice(voice_name: str):
+    """检查是否是 Sarvam AI 的声音"""
+    return voice_name.startswith("sarvam:")
+
+
 def tts(
     text: str,
     voice_name: str,
     voice_rate: float,
     voice_file: str,
     voice_volume: float = 1.0,
+    user_id: str = "global",
 ) -> Union[SubMaker, None]:
     if is_azure_v2_voice(voice_name):
-        return azure_tts_v2(text, voice_name, voice_file)
+        return azure_tts_v2(text, voice_name, voice_file, user_id=user_id)
+
+    # If official Azure TTS keys are configured, prefer it for all Azure/edge-tts voices
+    from app.services import db
+    speech_key = db.get_setting("azure_speech_key", user_id=user_id) or config.azure.get("speech_key", "")
+    service_region = db.get_setting("azure_speech_region", user_id=user_id) or config.azure.get("speech_region", "")
+    if speech_key and service_region and not is_siliconflow_voice(voice_name) and not is_gemini_voice(voice_name) and not is_mimo_voice(voice_name) and not is_sarvam_voice(voice_name):
+        v2_voice_name = voice_name if voice_name.endswith("-V2") else f"{voice_name}-V2"
+        res = azure_tts_v2(text, v2_voice_name, voice_file, user_id=user_id)
+        if res:
+            return res
+        logger.warning("Azure V2 TTS failed or returned empty, falling back to V1")
     elif is_siliconflow_voice(voice_name):
         # 从voice_name中提取模型和声音
         # 格式: siliconflow:model:voice-Gender
@@ -236,7 +253,7 @@ def tts(
             # 移除性别后缀，例如 "Zephyr-Female" -> "Zephyr"
             voice_with_gender = parts[1]
             voice = voice_with_gender.split("-")[0]
-            return gemini_tts(text, voice, voice_rate, voice_file, voice_volume)
+            return gemini_tts(text, voice, voice_rate, voice_file, voice_volume, user_id=user_id)
         else:
             logger.error(f"Invalid gemini voice name format: {voice_name}")
             return None
@@ -251,6 +268,15 @@ def tts(
             return mimo_tts(text, voice, voice_rate, voice_file, voice_volume)
         else:
             logger.error(f"Invalid mimo voice name format: {voice_name}")
+            return None
+    elif is_sarvam_voice(voice_name):
+        parts = voice_name.split(":")
+        if len(parts) >= 2:
+            voice_with_gender = parts[1]
+            voice = voice_with_gender.split("-")[0]
+            return sarvam_tts(text, voice, voice_rate, voice_file, voice_volume, user_id=user_id)
+        else:
+            logger.error(f"Invalid sarvam voice name format: {voice_name}")
             return None
     return azure_tts_v1(text, voice_name, voice_rate, voice_file)
 
@@ -527,6 +553,22 @@ def azure_tts_v1(
     text: str, voice_name: str, voice_rate: float, voice_file: str
 ) -> Union[SubMaker, None]:
     voice_name = parse_voice_name(voice_name)
+    voice_map = {
+        "en-US-AndrewNeural": "en-US-AndrewMultilingualNeural",
+        "en-US-EmmaNeural": "en-US-EmmaMultilingualNeural",
+        "en-US-AvaNeural": "en-US-AvaMultilingualNeural",
+        "en-US-BrianNeural": "en-US-BrianMultilingualNeural",
+        "hi-IN-KavyanjaliNeural": "hi-IN-SwaraNeural",
+        "hi-IN-AnanyaNeural": "hi-IN-SwaraNeural",
+        "hi-IN-NiharikaNeural": "hi-IN-SwaraNeural",
+        "hi-IN-KavyaNeural": "hi-IN-SwaraNeural",
+        "hi-IN-AartiNeural": "hi-IN-SwaraNeural",
+        "hi-IN-AaravNeural": "hi-IN-MadhurNeural",
+        "hi-IN-KunalNeural": "hi-IN-MadhurNeural",
+        "hi-IN-RehaanNeural": "hi-IN-MadhurNeural",
+        "hi-IN-ArjunNeural": "hi-IN-MadhurNeural"
+    }
+    voice_name = voice_map.get(voice_name, voice_name)
     text = text.strip()
     rate_str = convert_rate_to_percent(voice_rate)
     for i in range(3):
@@ -719,7 +761,7 @@ def siliconflow_tts(
     return None
 
 
-def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker, None]:
+def azure_tts_v2(text: str, voice_name: str, voice_file: str, user_id: str = "global") -> Union[SubMaker, None]:
     voice_name = is_azure_v2_voice(voice_name)
     if not voice_name:
         logger.error(f"invalid voice name: {voice_name}")
@@ -744,29 +786,22 @@ def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker,
 
     for i in range(3):
         try:
-            logger.info(f"start, voice name: {voice_name}, try: {i + 1}")
+            logger.info(f"start azure v2, voice name: {voice_name}, user {user_id}, try: {i + 1}")
 
             import azure.cognitiveservices.speech as speechsdk
 
             sub_maker = ensure_legacy_submaker_fields(SubMaker())
 
             def speech_synthesizer_word_boundary_cb(evt: speechsdk.SessionEventArgs):
-                # print('WordBoundary event:')
-                # print('\tBoundaryType: {}'.format(evt.boundary_type))
-                # print('\tAudioOffset: {}ms'.format((evt.audio_offset + 5000)))
-                # print('\tDuration: {}'.format(evt.duration))
-                # print('\tText: {}'.format(evt.text))
-                # print('\tTextOffset: {}'.format(evt.text_offset))
-                # print('\tWordLength: {}'.format(evt.word_length))
-
                 duration = _format_duration_to_offset(str(evt.duration))
                 offset = _format_duration_to_offset(evt.audio_offset)
                 sub_maker.subs.append(evt.text)
                 sub_maker.offset.append((offset, offset + duration))
 
             # Creates an instance of a speech config with specified subscription key and service region.
-            speech_key = config.azure.get("speech_key", "")
-            service_region = config.azure.get("speech_region", "")
+            from app.services import db
+            speech_key = db.get_setting("azure_speech_key", user_id=user_id) or config.azure.get("speech_key", "")
+            service_region = db.get_setting("azure_speech_region", user_id=user_id) or config.azure.get("speech_region", "")
             if not speech_key or not service_region:
                 logger.error("Azure speech key or region is not set")
                 return None
@@ -820,6 +855,7 @@ def gemini_tts(
     voice_rate: float,
     voice_file: str,
     voice_volume: float = 1.0,
+    user_id: str = "global",
 ) -> Union[SubMaker, None]:
     """
     使用Google Gemini TTS生成语音
@@ -841,18 +877,25 @@ def gemini_tts(
     _configure_pydub_ffmpeg(AudioSegment)
     
     try:
-        # 配置Gemini API
-        api_key = config.app.get("gemini_api_key", "")
-        if not api_key:
-            logger.error("Gemini API key is not set")
+        from app.services import db
+        from app.services.email_service import send_pipeline_email
+
+        # Collect all configured Gemini API keys
+        keys_to_try = []
+        key1 = db.get_setting("gemini_api_key", user_id=user_id) or config.app.get("gemini_api_key", "")
+        if key1:
+            keys_to_try.append(key1)
+        for k_idx in range(2, 6):
+            k_val = db.get_setting(f"gemini_api_key_{k_idx}", user_id=user_id) or config.app.get(f"gemini_api_key_{k_idx}", "")
+            if k_val:
+                keys_to_try.append(k_val)
+
+        if not keys_to_try:
+            logger.error(f"No Gemini API keys are configured for user {user_id}")
             return None
-            
-        genai.configure(api_key=api_key)
-        
-        logger.info(f"start, voice name: {voice_name}, try: 1")
-        
-        # 使用Gemini TTS API
-        model = genai.GenerativeModel("gemini-2.5-flash-preview-tts")
+
+        audio_segment = None
+        errors = []
         
         generation_config = {
             "response_modalities": ["AUDIO"],
@@ -864,52 +907,66 @@ def gemini_tts(
                 }
             }
         }
-        
-        response = model.generate_content(
-            contents=text,
-            generation_config=generation_config
-        )
-        
-        # 检查响应
-        if not response.candidates or not response.candidates[0].content:
-            logger.error("No audio content received from Gemini TTS")
-            return None
-            
-        # 获取音频数据
-        audio_data = None
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                audio_data = part.inline_data.data
-                break
+
+        for idx, current_key in enumerate(keys_to_try):
+            logger.info(f"Attempting Gemini tts (Key {idx+1}/{len(keys_to_try)}) for voice: {voice_name}, user {user_id}")
+            try:
+                genai.configure(api_key=current_key)
+                model = genai.GenerativeModel("gemini-2.5-flash-preview-tts")
+                response = model.generate_content(
+                    contents=text,
+                    generation_config=generation_config
+                )
                 
-        if not audio_data:
-            logger.error("No audio data found in response")
+                # Check response
+                if not response.candidates or not response.candidates[0].content:
+                    raise ValueError("No audio content received from Gemini TTS")
+                    
+                # Get audio data
+                audio_data = None
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        audio_data = part.inline_data.data
+                        break
+                        
+                if not audio_data:
+                    raise ValueError("No audio data found in response")
+                    
+                if isinstance(audio_data, str):
+                    audio_bytes = base64.b64decode(audio_data)
+                else:
+                    audio_bytes = audio_data
+                
+                audio_segment = AudioSegment.from_file(
+                    io.BytesIO(audio_bytes), 
+                    format="raw",
+                    frame_rate=24000,  # Gemini TTS默认采样率
+                    channels=1,        # 单声道
+                    sample_width=2     # 16-bit
+                )
+                break
+            except Exception as e:
+                logger.error(f"Gemini API key {idx+1} failed during TTS: {e}")
+                errors.append(f"Key {idx+1}: {str(e)}")
+
+        if audio_segment is None:
+            # All keys failed
+            combined_errors = " | ".join(errors)
+            logger.error("All configured Gemini API keys failed during speech synthesis!")
+            try:
+                send_pipeline_email(
+                    task_id="gemini-tts-failure-alert",
+                    state=-1,
+                    progress=0,
+                    subject="Gemini TTS API Key Fallback Failure Alert",
+                    status_msg="All configured Gemini API keys failed during speech synthesis.",
+                    error_msg=f"Encountered errors on all fallback keys:\n{combined_errors}",
+                    user_id=user_id
+                )
+            except Exception as mail_err:
+                logger.error(f"Failed to send Gemini TTS fallback failure email: {mail_err}")
             return None
-            
-        # 音频数据已经是原始字节，不需要base64解码
-        if isinstance(audio_data, str):
-            # 如果是字符串，则需要base64解码
-            audio_bytes = base64.b64decode(audio_data)
-        else:
-            # 如果已经是字节，直接使用
-            audio_bytes = audio_data
-        
-        # 尝试不同的音频格式 - Gemini可能返回不同的格式
-        audio_segment = None
-        
-        # Gemini返回Linear PCM格式，按照文档参数解析
-        try:
-            audio_segment = AudioSegment.from_file(
-                io.BytesIO(audio_bytes), 
-                format="raw",
-                frame_rate=24000,  # Gemini TTS默认采样率
-                channels=1,        # 单声道
-                sample_width=2     # 16-bit
-            )
-        except Exception as e:
-            logger.error(f"Failed to load PCM audio: {e}")
-            return None
-        
+
         # 导出为MP3格式
         audio_segment.export(voice_file, format="mp3")
         
@@ -1030,6 +1087,92 @@ def mimo_tts(
             )
         except Exception as e:
             logger.error(f"mimo tts failed: {str(e)}")
+
+    return None
+
+
+def sarvam_tts(
+    text: str,
+    voice_name: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+    user_id: str = "global",
+) -> Union[SubMaker, None]:
+    """
+    使用 Sarvam AI TTS (bulbul:v3) 生成语音。
+    """
+    text = (text or "").strip()
+    if not text:
+        logger.error("Sarvam TTS text is empty")
+        return None
+
+    from app.services import db
+    from pydub import AudioSegment
+    _configure_pydub_ffmpeg(AudioSegment)
+
+    api_key = db.get_setting("sarvam_api_key", user_id=user_id) or config.app.get("sarvam_api_key", "")
+    if not api_key:
+        logger.error("Sarvam API key is not set")
+        return None
+
+    url = "https://api.sarvam.ai/text-to-speech"
+
+    # bulbul:v3 model configuration
+    payload = {
+        "text": text,
+        "target_language_code": "hi-IN",
+        "speaker": voice_name,
+        "model": "bulbul:v3",
+        "speech_sample_rate": 24000
+    }
+
+    # Voice rate mapped to pace if supported (bulbul:v3 pace is 0.5 to 2.0)
+    if voice_rate:
+        pace = max(0.5, min(2.0, voice_rate))
+        payload["pace"] = pace
+
+    headers = {
+        "api-subscription-key": api_key,
+        "Content-Type": "application/json"
+    }
+
+    for i in range(3):
+        try:
+            logger.info(f"start sarvam tts, voice: {voice_name}, user {user_id}, try: {i + 1}")
+            ensure_file_path_exists(voice_file)
+
+            response = requests.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                result = response.json()
+                if "audios" in result and len(result["audios"]) > 0:
+                    audio_data = result["audios"][0]
+                    audio_bytes = base64.b64decode(audio_data)
+
+                    # Output raw format is wav, load and convert to final output format (usually mp3)
+                    audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="wav")
+                    
+                    output_format = utils.parse_extension(voice_file) or "mp3"
+                    if output_format == "wav":
+                        with open(voice_file, "wb") as f:
+                            f.write(audio_bytes)
+                    else:
+                        audio_segment.export(voice_file, format=output_format)
+
+                    audio_duration = len(audio_segment) / 1000.0
+                    sub_maker = ensure_legacy_submaker_fields(SubMaker())
+                    logger.success(f"sarvam tts succeeded: {voice_file}")
+                    return populate_legacy_submaker_with_full_text(
+                        sub_maker=sub_maker,
+                        text=text,
+                        audio_duration_seconds=audio_duration
+                    )
+                else:
+                    logger.error(f"Sarvam API response structure invalid: {result}")
+            else:
+                logger.error(f"Sarvam API failed with status {response.status_code}: {response.text}")
+        except Exception as e:
+            logger.error(f"Sarvam TTS attempt {i + 1} failed: {str(e)}")
 
     return None
 

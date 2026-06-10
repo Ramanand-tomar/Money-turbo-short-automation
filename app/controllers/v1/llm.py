@@ -21,12 +21,18 @@ router = new_router()
     summary="Create a script for the video",
 )
 def generate_video_script(request: Request, body: VideoScriptRequest):
+    user_id = getattr(request.state, "user_id", None) or request.query_params.get("user_id", "global")
     video_script = llm.generate_script(
         video_subject=body.video_subject,
         language=body.video_language,
         paragraph_number=body.paragraph_number,
         video_script_prompt=body.video_script_prompt,
         custom_system_prompt=body.custom_system_prompt,
+        user_id=user_id,
+        prompt_mode=body.prompt_mode,
+        target_platform=body.target_platform,
+        emotional_tone=body.emotional_tone,
+        trend_context=body.trend_context,
     )
     response = {"video_script": video_script}
     return utils.get_response(200, response)
