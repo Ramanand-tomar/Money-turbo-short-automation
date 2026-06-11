@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: money-printer-turbo
+    env: docker
+    dockerfilePath: ./Dockerfile.deploy
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: "8085"

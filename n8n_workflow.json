@@ -1,0 +1,115 @@
+{
+  "name": "MoneyPrinterTurbo Daily Automation (Multi-Language)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "1",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const topics = [\n  {\n    \"title\": \"Top 5 Facts About the Roman Empire\",\n    \"script_prompt\": \"Write a viral short about 5 crazy facts regarding the Roman Empire.\",\n    \"description\": \"Discover the rise and fall of the Roman Empire! #history #shorts\",\n    \"language\": \"\",\n    \"voice\": \"en-US-AndrewMultilingualNeural\"\n  },\n  {\n    \"title\": \"ब्रह्मांड के 5 रहस्य\",\n    \"script_prompt\": \"अंतरिक्ष और ब्लैक होल के बारे में 5 रोचक तथ्य।\",\n    \"description\": \"ब्रह्मांड के रहस्यमयी तथ्य जो आपको हैरान कर देंगे! #space #hindi #shorts\",\n    \"language\": \"hi\",\n    \"voice\": \"hi-IN-MadhurNeural\"\n  },\n  {\n    \"title\": \"How Artificial Intelligence will change the world\",\n    \"script_prompt\": \"Explain how AI will impact jobs and daily life in the next 10 years.\",\n    \"description\": \"The future is here! Will AI take over? #ai #tech #shorts\",\n    \"language\": \"en\",\n    \"voice\": \"en-US-ChristopherNeural\"\n  }\n  // Add the rest of your 100 topics here following this structure!\n];\n\n// Get static data to persist state between runs\nconst staticData = $getStaticData();\nstaticData.index = staticData.index || 0;\n\n// Get the topic for today\nconst currentTopic = topics[staticData.index];\n\n// Increment index, loop back to 0 if at the end\nstaticData.index = (staticData.index + 1) % topics.length;\n\nreturn { json: currentTopic };"
+      },
+      "id": "2",
+      "name": "Cycle Topics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-app-name.onrender.com/api/v1/videos",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"video_subject\": \"{{ $json.title }}\",\n  \"video_script_prompt\": \"{{ $json.script_prompt }}\",\n  \"video_language\": \"{{ $json.language }}\",\n  \"voice_name\": \"{{ $json.voice }}\",\n  \"target_platform\": \"youtube_shorts\",\n  \"video_aspect\": \"9:16\",\n  \"video_concat_mode\": \"random\"\n}",
+        "options": {}
+      },
+      "id": "3",
+      "name": "MoneyPrinterTurbo API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "your_email@gmail.com",
+        "toEmail": "your_email@gmail.com",
+        "subject": "={{ 'YouTube Video Uploaded: ' + $('Cycle Topics').item.json.title }}",
+        "text": "={{ 'Successfully triggered video generation for: ' + $('Cycle Topics').item.json.title + '\\n\\nDescription to be used: ' + $('Cycle Topics').item.json.description }}",
+        "options": {}
+      },
+      "id": "4",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        850,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "YOUR_SMTP_CREDENTIALS_ID_HERE",
+          "name": "SMTP credentials"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Cycle Topics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cycle Topics": {
+      "main": [
+        [
+          {
+            "node": "MoneyPrinterTurbo API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MoneyPrinterTurbo API": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}
