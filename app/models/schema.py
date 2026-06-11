@@ -39,12 +39,12 @@ class VideoAspect(str, Enum):
 
     def to_resolution(self):
         if self == VideoAspect.landscape.value:
-            return 1920, 1080
+            return 1280, 720
         elif self == VideoAspect.portrait.value:
-            return 1080, 1920
+            return 720, 1280
         elif self == VideoAspect.square.value:
-            return 1080, 1080
-        return 1080, 1920
+            return 720, 720
+        return 720, 1280
 
 
 class _Config:

@@ -595,7 +595,7 @@ def combine_videos(
                 
             # wirte clip to temp file
             clip_file = f"{output_dir}/temp-clip-{i+1}.mp4"
-            clip.write_videofile(clip_file, logger=None, fps=fps, codec=video_codec)
+            clip.write_videofile(clip_file, logger=None, fps=fps, codec=video_codec, threads=1)
 
             # Store clip duration before closing
             clip_duration_saved = clip.duration
