@@ -19,3 +19,10 @@ socksio==1.0.0
 pydub==0.25.1
 litellm==1.60.0
 pyjwt[crypto]==2.8.0
+
+# Added dependencies for backend operations
+sentry_sdk
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+cloudinary
