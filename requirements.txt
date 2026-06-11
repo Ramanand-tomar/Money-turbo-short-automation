@@ -27,3 +27,4 @@ google-auth-oauthlib
 google-auth-httplib2
 cloudinary
 slowapi
+psycopg2-binary
