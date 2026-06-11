@@ -162,6 +162,11 @@ def save_config():
 
 _cfg = load_config()
 app = _cfg.get("app", {})
+if os.getenv("LLM_PROVIDER"):
+    app["llm_provider"] = os.getenv("LLM_PROVIDER")
+if os.getenv("GEMINI_API_KEY"):
+    app["gemini_api_key"] = os.getenv("GEMINI_API_KEY")
+
 whisper = _cfg.get("whisper", {})
 proxy = _cfg.get("proxy", {})
 azure = _cfg.get("azure", {})
