@@ -2,14 +2,16 @@ import os
 from loguru import logger
 from app.services import db
 
-def upload_to_cloudinary(file_path: str, resource_type: str = "video", user_id: str = "global") -> str:
+from typing import Optional, Dict
+
+def upload_to_cloudinary(file_path: str, resource_type: str = "video", user_id: str = "global") -> Optional[Dict[str, str]]:
     """
-    Upload a local file to Cloudinary and return its secure URL.
+    Upload a local file to Cloudinary and return its secure URL and public_id.
     Fetches settings dynamically from NeonDB/SQLite scoped to user_id.
     """
     if not os.path.exists(file_path):
         logger.error(f"Local file does not exist for Cloudinary upload: {file_path}")
-        return ""
+        return None
 
     # Try parsing CLOUDINARY_URL first
     cloudinary_url = db.get_setting("cloudinary_url", user_id=user_id) or os.getenv("CLOUDINARY_URL")
@@ -45,7 +47,7 @@ def upload_to_cloudinary(file_path: str, resource_type: str = "video", user_id: 
             "Cloudinary credentials are not configured globally or in settings. "
             "Skipping cloud upload; returning local path."
         )
-        return ""
+        return None
 
     try:
         import cloudinary
@@ -66,13 +68,74 @@ def upload_to_cloudinary(file_path: str, resource_type: str = "video", user_id: 
             folder="money-printer-turbo"
         )
         secure_url = upload_result.get("secure_url")
+        public_id = upload_result.get("public_id")
         if secure_url:
             logger.success(f"Cloudinary upload completed successfully: {secure_url}")
-            return secure_url
+            return {"url": secure_url, "public_id": public_id}
         else:
             logger.error("Cloudinary upload failed: no secure_url returned")
-            return ""
+            return None
 
     except Exception as e:
         logger.exception(f"Error during Cloudinary upload: {e}")
-        return ""
+        return None
+
+
+def delete_from_cloudinary(public_id: str, resource_type: str = "video", user_id: str = "global") -> bool:
+    """
+    Delete a file from Cloudinary by its public_id.
+    """
+    if not public_id:
+        return False
+
+    cloudinary_url = db.get_setting("cloudinary_url", user_id=user_id) or os.getenv("CLOUDINARY_URL")
+    cloud_name = None
+    api_key = None
+    api_secret = None
+
+    if cloudinary_url and cloudinary_url.startswith("cloudinary://"):
+        try:
+            content = cloudinary_url[13:]
+            if "@" in content:
+                keys, cloud = content.split("@", 1)
+                if ":" in keys:
+                    k, s = keys.split(":", 1)
+                    api_key = k
+                    api_secret = s
+                    cloud_name = cloud
+        except Exception:
+            pass
+
+    if not cloud_name:
+        cloud_name = db.get_setting("cloudinary_cloud_name", user_id=user_id) or os.getenv("CLOUDINARY_CLOUD_NAME") or ""
+    if not api_key:
+        api_key = db.get_setting("cloudinary_api_key", user_id=user_id) or os.getenv("CLOUDINARY_API_KEY") or ""
+    if not api_secret:
+        api_secret = db.get_setting("cloudinary_api_secret", user_id=user_id) or os.getenv("CLOUDINARY_API_SECRET") or ""
+
+    if not all([cloud_name, api_key, api_secret]):
+        return False
+
+    try:
+        import cloudinary
+        import cloudinary.uploader
+
+        cloudinary.config(
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
+            secure=True
+        )
+
+        logger.info(f"Deleting {public_id} from Cloudinary ({resource_type})...")
+        result = cloudinary.uploader.destroy(public_id, resource_type=resource_type)
+        if result.get("result") == "ok":
+            logger.success(f"Successfully deleted {public_id} from Cloudinary.")
+            return True
+        else:
+            logger.warning(f"Failed to delete {public_id} from Cloudinary. Response: {result}")
+            return False
+
+    except Exception as e:
+        logger.exception(f"Error deleting from Cloudinary: {e}")
+        return False

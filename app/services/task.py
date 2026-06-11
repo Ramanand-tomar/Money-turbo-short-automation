@@ -429,9 +429,13 @@ def start(task_id, params: VideoParams, stop_at: str = "video", enable_auto_uplo
         logger.info("Step 7: Uploading generated video to Cloudinary...")
         from app.services.cloudinary_service import upload_to_cloudinary
         cloudinary_url = ""
+        cloudinary_public_id = ""
         try:
             sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, status_message="Uploading generated video to Cloud CDN...", user_id=user_id)
-            cloudinary_url = upload_to_cloudinary(final_video_paths[0], user_id=user_id)
+            cloudinary_res = upload_to_cloudinary(final_video_paths[0], user_id=user_id)
+            if cloudinary_res:
+                cloudinary_url = cloudinary_res.get("url", "")
+                cloudinary_public_id = cloudinary_res.get("public_id", "")
         except Exception as cloud_err:
             logger.warning(f"Non-fatal error uploading to Cloudinary: {cloud_err}")
             
@@ -463,6 +467,20 @@ def start(task_id, params: VideoParams, stop_at: str = "video", enable_auto_uplo
                 )
                 logger.info(f"✅ Auto-uploaded directly to YouTube: {final_video_paths[0]}")
                 youtube_uploaded_status = 1
+                
+                # Cleanup Storage (Cloudinary and Local)
+                logger.info("Cleaning up file storage after successful YouTube upload...")
+                if cloudinary_public_id:
+                    from app.services.cloudinary_service import delete_from_cloudinary
+                    delete_from_cloudinary(cloudinary_public_id, user_id=user_id)
+                    cloudinary_url = "" # Cleared after deletion
+                
+                import shutil
+                task_dir_path = utils.task_dir(task_id, user_id)
+                if os.path.exists(task_dir_path):
+                    shutil.rmtree(task_dir_path, ignore_errors=True)
+                    logger.info(f"Local file storage removed: {task_dir_path}")
+
             except Exception as yt_err:
                 logger.error(f"⚠️ YouTube auto-publishing failed: {yt_err}")
 
