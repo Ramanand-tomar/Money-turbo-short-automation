@@ -778,7 +778,7 @@ def save_settings(request: Request, body: dict):
 def get_youtube_status(request: Request):
     user_id = _get_user_id(request)
     from app.services import db
-    client_secret_exists = bool(db.get_setting("youtube_client_id", user_id=user_id)) or os.path.exists("client_secret.json")
+    client_secret_exists = bool(db.get_setting("youtube_client_id", user_id=user_id)) or os.path.exists("client_secret.json") or bool(os.getenv("YOUTUBE_CLIENT_SECRET_JSON"))
     youtube_creds = db.get_youtube_credentials(user_id=user_id)
     
     return utils.get_response(200, {
@@ -792,7 +792,9 @@ def get_youtube_status(request: Request):
 @router.get("/youtube/connect", summary="Get browser-friendly Google OAuth link for YouTube channel connection")
 def connect_youtube_oauth(request: Request, user_id: str = Query("global")):
     from youtube_uploader import get_web_flow
-    redirect_uri = "http://127.0.0.1:8085/api/v1/youtube/oauth-callback"
+    redirect_uri = str(request.url_for("youtube_oauth_callback"))
+    if "onrender.com" in redirect_uri:
+        redirect_uri = redirect_uri.replace("http://", "https://")
     try:
         flow = get_web_flow(redirect_uri, user_id=user_id)
         flow.autogenerate_code_verifier = False
@@ -809,12 +811,14 @@ def connect_youtube_oauth(request: Request, user_id: str = Query("global")):
 
 
 @router.get("/youtube/oauth-callback", summary="Receive Google OAuth authorization code and save channel tokens")
-def youtube_oauth_callback(code: str = Query(...), state: str = Query("global")):
+def youtube_oauth_callback(request: Request, code: str = Query(...), state: str = Query("global")):
     from youtube_uploader import get_web_flow, SCOPES, API_SERVICE_NAME, API_VERSION
     from googleapiclient.discovery import build
     from app.services import db
     
-    redirect_uri = "http://127.0.0.1:8085/api/v1/youtube/oauth-callback"
+    redirect_uri = str(request.url_for("youtube_oauth_callback"))
+    if "onrender.com" in redirect_uri:
+        redirect_uri = redirect_uri.replace("http://", "https://")
     try:
         flow = get_web_flow(redirect_uri, user_id=state)
         flow.autogenerate_code_verifier = False
@@ -843,8 +847,15 @@ def youtube_oauth_callback(code: str = Query(...), state: str = Query("global"))
         
         import urllib.parse
         encoded_channel_name = urllib.parse.quote(channel_name)
+        
+        base_url = str(request.base_url).rstrip("/")
+        if "onrender.com" in base_url:
+            base_url = base_url.replace("http://", "https://")
+        elif "127.0.0.1" in base_url or "localhost" in base_url:
+            base_url = "http://localhost:5173"
+            
         return RedirectResponse(
-            f"http://localhost:5173/?tab=youtube"
+            f"{base_url}/?tab=youtube"
             f"&user_id={state}"
             f"&youtube_access_token={creds.token}"
             f"&youtube_refresh_token={creds.refresh_token}"
@@ -855,7 +866,14 @@ def youtube_oauth_callback(code: str = Query(...), state: str = Query("global"))
         logger.error(f"YouTube callback processing error: {e}")
         import urllib.parse
         encoded_err = urllib.parse.quote(str(e))
-        return RedirectResponse(f"http://localhost:5173/?tab=youtube&error={encoded_err}")
+        
+        base_url = str(request.base_url).rstrip("/")
+        if "onrender.com" in base_url:
+            base_url = base_url.replace("http://", "https://")
+        elif "127.0.0.1" in base_url or "localhost" in base_url:
+            base_url = "http://localhost:5173"
+            
+        return RedirectResponse(f"{base_url}/?tab=youtube&error={encoded_err}")
 
 
 @router.post("/youtube/connect", summary="Fallback post link to trigger old auth flow")
