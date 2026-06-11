@@ -134,6 +134,10 @@ def load_config():
         if os.path.isfile(example_file):
             shutil.copyfile(example_file, config_file)
             logger.info("copy config.example.toml to config.toml")
+        else:
+            with open(config_file, "w", encoding="utf-8") as f:
+                f.write("")
+            logger.info("created empty config.toml because example file is also missing")
 
     logger.info(f"load config from file: {config_file}")
 
